@@ -75,9 +75,22 @@ class SEMGEncoderDecoder(pl.LightningModule):
         z = z.view(z.size(0), -1)
         z = self.fc(z)
 
-        loss = nn.functional.mse_loss(z, y)
-        # Logging to TensorBoard (if installed) by default
-        # self.log("train_loss", loss)
+        loss = nn.functional.mse_loss(z, y, reduction='mean')
+        self.log("train_loss", loss, on_step=True, on_epoch=True)
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        x = batch['sample']
+        y = batch['label']
+
+        z = self.encoder(x)
+        z = self.resblocks(z)
+        z = self.decoder(z)
+        z = z.view(z.size(0), -1)
+        z = self.fc(z)
+
+        loss = nn.functional.mse_loss(z, y, reduction='mean')
+        self.log("val_loss", loss, on_step=True, on_epoch=True)
         return loss
 
     def configure_optimizers(self):
@@ -93,6 +106,7 @@ class SEMGEncoderDecoder(pl.LightningModule):
         print()
         print("---")
         print("Resblocks")
+        print("---")
         print()
         for m in self.resblocks.children():
             output = m(output)
@@ -101,6 +115,7 @@ class SEMGEncoderDecoder(pl.LightningModule):
         print()
         print("---")
         print("Decoder")
+        print("---")
         print()
 
         for m in self.decoder.children():

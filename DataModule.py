@@ -6,11 +6,13 @@ import pytorch_lightning as pl
 import torch.utils.data
 from torch.utils.data import random_split, DataLoader
 
+from constants import DATALOADER_NUM_WORKERS
 
 class KINDataset(torch.utils.data.Dataset):
     def __init__(self, data_dir: str = "data"):
         super().__init__()
         self.data = pd.read_pickle(data_dir + os.path.sep + 'KIN_MUS_UJI_preprocessed.pkl')
+        print("Dataset length: ", len(self.data))
 
     def __getitem__(self, index):
         # Get item from dataframe
@@ -41,10 +43,10 @@ class KINDataModule(pl.LightningDataModule):
         self.train, self.val = random_split(self.dataset, [train_size, val_size])
 
     def train_dataloader(self):
-        return DataLoader(self.train, batch_size=self.batch_size)
+        return DataLoader(self.train, batch_size=self.batch_size, num_workers=DATALOADER_NUM_WORKERS)
 
     def val_dataloader(self):
-        return DataLoader(self.val, batch_size=self.batch_size)
+        return DataLoader(self.val, batch_size=self.batch_size, num_workers=DATALOADER_NUM_WORKERS)
 
     def test_dataloader(self):
-        return DataLoader(self.test, batch_size=self.batch_size)
+        return DataLoader(self.test, batch_size=self.batch_size, num_workers=DATALOADER_NUM_WORKERS)
