@@ -11,7 +11,7 @@ from hyperparameters import BATCH_SIZE
 dropout = 0.1
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-base_lr = 1e-2
+base_lr = 5e-3
 
 
 class PositionalEncoding(nn.Module):
@@ -90,6 +90,29 @@ class SEMGTransformer(pl.LightningModule):
         out = out.permute(1, 0, 2)
 
         return out
+    
+    # def forward(self, x):
+    #     y_input = torch.tensor([[0.0]], dtype=torch.long, device=device)
+
+    #     num_tokens = len(x[0])
+
+    #     for _ in range(100):
+    #         # Get source mask
+    #         tgt_mask = model.get_tgt_mask(y_input.size(1)).to(device)
+            
+    #         pred = model(input_sequence, y_input, tgt_mask)
+            
+    #         next_item = pred.topk(1)[1].view(-1)[-1].item() # num with highest probability
+    #         next_item = torch.tensor([[next_item]], device=device)
+
+    #         # Concatenate previous input with predicted best word
+    #         y_input = torch.cat((y_input, next_item), dim=1)
+
+    #         # Stop if model predicts end of sentence
+    #         if next_item.view(-1).item() == EOS_token:
+    #             break
+
+    #     return y_input.view(-1).tolist()
 
     def get_tgt_mask(self, size) -> torch.tensor:
         # Generates a squeare matrix where the each row allows one word more to be seen
@@ -167,7 +190,8 @@ class SEMGTransformer(pl.LightningModule):
         return self.optimizer
 
     def training_epoch_end(self, outputs):
-        if self.trainer.current_epoch > 30:
+        # If last epoch loss is below threshold, fix learning rate
+        if self.trainer.logged_metrics['train_loss'] < 10 or self.trainer.current_epoch > 10:
             return
         
         self.scheduler.step()

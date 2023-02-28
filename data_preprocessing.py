@@ -41,7 +41,7 @@ def preprocess_data(processing_function, name='KIN_MUS_UJI_preprocessed.pkl'):
                 continue
 
             # Implement this in relevant preprocessing scripts for different models
-            processing_function(recording, *data)
+            data = processing_function(recording, data)
 
         except:
             continue

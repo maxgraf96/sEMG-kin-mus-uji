@@ -14,12 +14,7 @@ from hyperparameters import BATCH_SIZE
 class KINDataset(torch.utils.data.Dataset):
     def __init__(self, mode, data_dir: str = "data"):
         super().__init__()
-        self.data = pd.read_pickle(data_dir + os.path.sep + 'KIN_MUS_UJI_preprocessed.pkl')
-        # Only keep first BATCH_SIZE samples
-        # self.data = self.data.iloc[:BATCH_SIZE * 10]
-
-        # Make a noise tensor with 100 random values around 0 with variance 0.01
-        # self.noise = (torch.randn(100, 7) * 0.01).numpy().tolist()
+        self.data = pd.read_pickle(data_dir + os.path.sep + 'KIN_MUS_UJI_preprocessed_' + mode + '.pkl')
 
         print("---")
         print("Dataset length: ", len(self.data))
@@ -66,6 +61,10 @@ class KINDataModule(pl.LightningDataModule):
         train_size = int(0.8 * len(self.dataset))
         val_size = len(self.dataset) - train_size
         self.train, self.val = random_split(self.dataset, [train_size, val_size])
+
+        # Non-random split
+        # self.train = torch.utils.data.Subset(self.dataset, range(train_size))
+        # self.val = torch.utils.data.Subset(self.dataset, range(train_size, train_size + val_size))
 
     def train_dataloader(self):
         return DataLoader(self.train, batch_size=self.batch_size, num_workers=DATALOADER_NUM_WORKERS)

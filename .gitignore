@@ -3,6 +3,11 @@ data/
 lightning_logs/
 wandb/
 
+*.onnx
+*.pt
+*.mlpackage
+*.mlmodel
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

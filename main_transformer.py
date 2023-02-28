@@ -16,11 +16,13 @@ if __name__ == "__main__":
     wandb_logger = WandbLogger()
 
     trainer = pl.Trainer(
-        max_epochs=300,
-        check_val_every_n_epoch=20,
+        max_epochs=50,
+        check_val_every_n_epoch=5,
         accelerator="gpu",
         devices=1,
         # strategy="dp",
         logger=wandb_logger
         )
     trainer.fit(model, data_module)
+
+    torch.save(model.state_dict(), "model.pt")
