@@ -9,8 +9,8 @@ if __name__ == '__main__':
     model.load_state_dict(torch.load("model.pt"))
     model.eval()
     
-    input_sample = torch.randn((1024, 100, 18))
-    tgt_sample = torch.randn((1024, 100, 18))
+    input_sample = torch.randn((1, 100, 18))
+    tgt_sample = torch.randn((1, 100, 18))
     
     # Trace model
     traced_model = model.to_torchscript(method="trace", example_inputs=(input_sample, tgt_sample))
@@ -18,17 +18,17 @@ if __name__ == '__main__':
     print(out.shape)
 
     # Convert to Core ML program using the Unified Conversion API.
-    model = ct.convert(
-        traced_model,
-        convert_to="mlprogram",
-        inputs=[ct.TensorType(shape=input_sample.shape), ct.TensorType(shape=tgt_sample.shape)]
-    )
-    # Save the converted model.
-    model.save("model.mlpackage")
+    # model = ct.convert(
+    #     traced_model,
+    #     convert_to="mlprogram",
+    #     inputs=[ct.TensorType(shape=input_sample.shape), ct.TensorType(shape=tgt_sample.shape)]
+    # )
+    # # Save the converted model.
+    # model.save("model.mlpackage")
 
     # Export to ONNX
-    # filepath = "model.onnx"
-    # model.to_onnx(filepath, (input_sample, tgt_sample), export_params=True)
+    filepath = "model.onnx"
+    model.to_onnx(filepath, (input_sample, tgt_sample), export_params=True, opset_version=10, input_names=["input", "tgt"], output_names=["output"])
 
     # Load with onnx
     # onnx_model = onnx.load("model.onnx")
