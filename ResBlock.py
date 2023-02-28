@@ -1,9 +1,10 @@
 from torch import nn
 import torch.nn.functional as F
 
+
 class ResBlock(nn.Module):
     """
-    Iniialize a residual block with two convolutions followed by batchnorm layers
+    Iniialise a residual block with two convolutions followed by batchnorm layers
     """
     def __init__(self, in_size: int, hidden_size: int, out_size: int):
         super().__init__()

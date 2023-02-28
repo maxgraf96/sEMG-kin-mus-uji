@@ -9,7 +9,7 @@ from hyperparameters import SAMPLE_WINDOW_LENGTH, SAMPLE_HOP_SIZE
 data_dir = "data"
 
 
-def preprocess_data():
+def preprocess_data(processing_function, name='KIN_MUS_UJI_preprocessed.pkl'):
     """
     Takes a csv file created in mat_to_df.py and preprocesses it.
     Preprocessing involves sliding a window over the sEMG data and using the corresponding kinematic data as label.
@@ -40,23 +40,14 @@ def preprocess_data():
             if len(recording['EMG_data']) <= SAMPLE_WINDOW_LENGTH:
                 continue
 
-            # Slide a window over the EMG data and add each window to the data, using a hop size of 1
-            # As a label, use the corresponding kinematic data of the last sample in the window
-            for j in range(0, len(recording['EMG_data']) - SAMPLE_WINDOW_LENGTH, SAMPLE_HOP_SIZE):
-                s = {
-                    'Subject': recording['Subject'],
-                    'ADL': recording['ADL'],
-                    'Kinematic_data': recording['Kinematic_data'][j + SAMPLE_WINDOW_LENGTH - 1],
-                    'EMG_data': recording['EMG_data'][j:j + SAMPLE_WINDOW_LENGTH]
-                }
-                sample = pd.DataFrame.from_dict(s, orient='index').transpose()
-                data = pd.concat([data, sample], ignore_index=True)
+            # Implement this in relevant preprocessing scripts for different models
+            processing_function(recording, *data)
 
         except:
             continue
 
     # Save the data to a pickle file
-    data.to_pickle(data_dir + os.path.sep + 'KIN_MUS_UJI_preprocessed.pkl')
+    data.to_pickle(data_dir + os.path.sep + name)
 
 
 def load_preprocessed_data():
@@ -65,8 +56,4 @@ def load_preprocessed_data():
     :return: A pandas dataframe containing the preprocessed data
     """
     return pd.read_pickle(data_dir + os.path.sep + 'KIN_MUS_UJI_preprocessed.pkl')
-
-
-if __name__ == "__main__":
-    preprocess_data()
 
