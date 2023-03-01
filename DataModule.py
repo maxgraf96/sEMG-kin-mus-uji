@@ -17,18 +17,31 @@ class KINDataset(torch.utils.data.Dataset):
         self.data = pd.read_pickle(data_dir + os.path.sep + 'KIN_MUS_UJI_preprocessed_' + mode + '.pkl')
 
         print("---")
-        print("Dataset length: ", len(self.data))
+        print("Dataset length: ", self.__len__())
         print("---")
 
         self.mode = mode
 
     def __getitem__(self, index):
-        # Get item from dataframe
-        item = self.data.iloc[index]
-        emg = item.EMG_data
+        acc_index = index
+        if index >= len(self.data):
+            acc_index = index % len(self.data)
 
-        sample = torch.tensor(emg, dtype=torch.float32)
+        # Get item from dataframe
+        item = self.data.iloc[acc_index]
+        sample = torch.tensor(item.EMG_data, dtype=torch.float32)
         label = torch.tensor(item.Kinematic_data, dtype=torch.float32)
+
+        # If the index is > than len(self.data), then roll the tensors accordingly
+        if index >= len(self.data):
+            # Get roll factor
+            percentage = index / (len(self.data) * 7)
+            # Map float percentage from range [0...100] to [0...7]
+            shift_factor = int(percentage * 7)
+            # Roll along sensor axis
+            sample = torch.roll(sample, shift_factor, 1)
+            label = torch.roll(label, shift_factor, 1)
+
 
         # Architecture specific preprocessing
         if self.mode == "cnn":
@@ -44,7 +57,7 @@ class KINDataset(torch.utils.data.Dataset):
         return {'sample': sample, 'label': label}
 
     def __len__(self):
-        return len(self.data)
+        return len(self.data) * 7
 
 
 class KINDataModule(pl.LightningDataModule):
@@ -67,10 +80,10 @@ class KINDataModule(pl.LightningDataModule):
         # self.val = torch.utils.data.Subset(self.dataset, range(train_size, train_size + val_size))
 
     def train_dataloader(self):
-        return DataLoader(self.train, batch_size=self.batch_size, num_workers=DATALOADER_NUM_WORKERS)
+        return DataLoader(self.train, batch_size=self.batch_size, num_workers=DATALOADER_NUM_WORKERS, shuffle=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val, batch_size=self.batch_size, num_workers=DATALOADER_NUM_WORKERS)
+        return DataLoader(self.val, batch_size=self.batch_size, num_workers=DATALOADER_NUM_WORKERS, shuffle=False)
 
     def test_dataloader(self):
         return DataLoader(self.test, batch_size=self.batch_size, num_workers=DATALOADER_NUM_WORKERS)

@@ -47,16 +47,16 @@ class PositionalEncoding(nn.Module):
 class SEMGTransformer(pl.LightningModule):
     def __init__(self):
         super(SEMGTransformer, self).__init__()
-        self.d_model = 36
+        self.d_model = 18
         self.input_dim = 18
-        self.n_layers = 4
+        self.n_layers = 2
         self.output_dim = 18
 
         self.positional_encoder = PositionalEncoding(
             dim_model=self.d_model, dropout_p=dropout, max_len=BATCH_SIZE
         )
         self.embedding = nn.Linear(self.input_dim, self.d_model)
-        self.transformer = nn.Transformer(d_model=self.d_model, nhead=12, num_encoder_layers=self.n_layers,
+        self.transformer = nn.Transformer(d_model=self.d_model, nhead=2, num_encoder_layers=self.n_layers,
                                           num_decoder_layers=self.n_layers, dim_feedforward=self.output_dim, dropout=dropout,
                                           activation='relu')
         self.fc = nn.Linear(self.d_model, self.output_dim)
@@ -175,10 +175,10 @@ class SEMGTransformer(pl.LightningModule):
         z = self.forward(x, y, tgt_mask=tgt_mask)
         loss = self.loss_function(z, y)
 
-        # For the first 3 elements, get the values from indices 5, 8, 10 and 14 on the cpu and compare
-        for i in self.loss_indices:
-            z_comp = z[0, :3, i].cpu().detach().numpy()
-            y_comp = y[0, :3, i].cpu().detach().numpy()
+        # For the first element, get the first 3 relevant predicted joint angles on the cpu and compare
+        for i in range(3):
+            z_comp = z[0, 0, self.loss_indices[i]].cpu().detach().numpy()
+            y_comp = y[0, 0, self.loss_indices[i]].cpu().detach().numpy()
             print(i, z_comp, y_comp)
 
         self.log("val_loss", loss, on_step=True)
