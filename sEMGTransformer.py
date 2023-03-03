@@ -47,24 +47,32 @@ class PositionalEncoding(nn.Module):
 class SEMGTransformer(pl.LightningModule):
     def __init__(self):
         super(SEMGTransformer, self).__init__()
-        self.d_model = 18
-        self.input_dim = 18
+        
         self.n_layers = 2
-        self.output_dim = 18
+        
+        # Kin-mus-uji config
+        # self.d_model = 18
+        # self.input_dim = 18
+        # self.output_dim = 18
+
+        self.d_model = 16
+        self.input_dim = 16
+        self.output_dim = 16
 
         self.positional_encoder = PositionalEncoding(
             dim_model=self.d_model, dropout_p=dropout, max_len=BATCH_SIZE
         )
         self.embedding = nn.Linear(self.input_dim, self.d_model)
-        self.transformer = nn.Transformer(d_model=self.d_model, nhead=2, num_encoder_layers=self.n_layers,
+        self.transformer = nn.Transformer(d_model=self.d_model, nhead=4, num_encoder_layers=self.n_layers,
                                           num_decoder_layers=self.n_layers, dim_feedforward=self.output_dim, dropout=dropout,
                                           activation='relu')
         self.fc = nn.Linear(self.d_model, self.output_dim)
 
-        # Indices of the 14 joints we want to predict as per paper
-        self.loss_indices = [5, 8, 10, 14, 7, 9, 12, 16, 6, 11, 15, 2, 3, 4]
+        # Kin-mus-uji dataset stuff
+        # Indices of the 14 joints we want to predict as per kin-mus-uji datasetpaper
+        # self.loss_indices = [5, 8, 10, 14, 7, 9, 12, 16, 6, 11, 15, 2, 3, 4]
         # subtract 1 from the indices
-        self.loss_indices = [i - 1 for i in self.loss_indices]
+        # self.loss_indices = [i - 1 for i in self.loss_indices]
 
         self.optimizer = None
         self.scheduler = None
@@ -136,8 +144,14 @@ class SEMGTransformer(pl.LightningModule):
         return (matrix == pad_token)
 
     def loss_function(self, x, y):
+        # Kin-mus-uji loss
         # Take MSE loss on the 14 indices
-        loss = nn.MSELoss()(x[:, :, self.loss_indices], y[:, :, self.loss_indices]) / len(self.loss_indices)
+        # loss = nn.MSELoss()(x[:, :, self.loss_indices], y[:, :, self.loss_indices]) / len(self.loss_indices)
+
+        # Hu 2022 loss
+        # Take MSE loss on the whole output, not the dummy token at the end
+        loss = nn.MSELoss()(x[:self.output_dim - 1], y[:self.output_dim - 1]) / 15
+
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -177,8 +191,12 @@ class SEMGTransformer(pl.LightningModule):
 
         # For the first element, get the first 3 relevant predicted joint angles on the cpu and compare
         for i in range(3):
-            z_comp = z[0, 0, self.loss_indices[i]].cpu().detach().numpy()
-            y_comp = y[0, 0, self.loss_indices[i]].cpu().detach().numpy()
+            # Kin-mus-uji val logging
+            # z_comp = z[0, 0, self.loss_indices[i]].cpu().detach().numpy()
+            # y_comp = y[0, 0, self.loss_indices[i]].cpu().detach().numpy()
+            # Hu 2022 val logging
+            z_comp = z[0, 0, i].cpu().detach().numpy()
+            y_comp = y[0, 0, i].cpu().detach().numpy()
             print(i, z_comp, y_comp)
 
         self.log("val_loss", loss, on_step=True)
@@ -191,7 +209,7 @@ class SEMGTransformer(pl.LightningModule):
 
     def training_epoch_end(self, outputs):
         # If last epoch loss is below threshold, fix learning rate
-        if self.trainer.logged_metrics['train_loss'] < 10 or self.trainer.current_epoch > 10:
+        if self.trainer.logged_metrics['train_loss'] < 5 or self.trainer.current_epoch > 20:
             return
         
         self.scheduler.step()
@@ -205,11 +223,19 @@ class SEMGTransformer(pl.LightningModule):
 
 
 if __name__ == "__main__":
-    model = SEMGTransformer()
-    input_tensor = torch.rand(1024, 100, 18)
-    target = torch.rand(1024, 100, 18)
+    model = SEMGTransformer().to(device)
+
+    # KIN-MUS-UJI config
+    # input_tensor = torch.rand(1024, 100, 18)
+    # target = torch.rand(1024, 100, 18)
+    
+    # Hu 2022 config
+    input_tensor = torch.rand(1024, 100, 16).to(device)
+    target = torch.rand(1024, 100, 16).to(device)
+
     sequence_length = target.size(1)
     tgt_mask = model.get_tgt_mask(sequence_length)
+    
     # model.print_sizes(input_tensor)
     y = model(input_tensor, target, tgt_mask=tgt_mask)
 
