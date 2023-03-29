@@ -1,4 +1,6 @@
 data/
+model_hu_2022_tf/
+model.tf/
 
 lightning_logs/
 wandb/
@@ -7,6 +9,7 @@ wandb/
 *.pt
 *.mlpackage
 *.mlmodel
+*.tflite
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

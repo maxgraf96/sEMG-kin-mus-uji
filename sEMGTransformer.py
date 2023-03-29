@@ -1,21 +1,21 @@
+from functools import cached_property
 import math
-
 import torch
-from torch import optim, nn, utils, Tensor
+from torch import optim, nn
 import pytorch_lightning as pl
-from torch.autograd import Variable
 
-from ResBlock import ResBlock
-from hyperparameters import BATCH_SIZE
+from hyperparameters import BATCH_SIZE, SEQ_LEN
 
-dropout = 0.1
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+dropout = 0.05
+
+# device = torch.device("cpu")
+
+model_name = "model_hu_2022"
 
 base_lr = 5e-3
 
-
 class PositionalEncoding(nn.Module):
-    def __init__(self, dim_model, dropout_p, max_len):
+    def __init__(self, d_model, dropout_p, max_len):
         super().__init__()
         # Modified version from: https://pytorch.org/tutorials/beginner/transformer_tutorial.html
         # max_len determines how far the position can have an effect on a token (window)
@@ -23,30 +23,40 @@ class PositionalEncoding(nn.Module):
         # Info
         self.dropout = nn.Dropout(dropout_p)
 
-        # Encoding - From formula
-        pos_encoding = torch.zeros(max_len, dim_model)
-        positions_list = torch.arange(0, max_len, dtype=torch.float).view(-1, 1)  # 0, 1, 2, 3, 4, 5
-        division_term = torch.exp(
-            torch.arange(0, dim_model, 2).float() * (-math.log(10000.0)) / dim_model)  # 1000^(2i/dim_model)
+        # # Encoding - From formula
+        # pos_encoding = torch.zeros(1, max_len, dim_model)
+        # positions_list = torch.arange(0, max_len, dtype=torch.float).view(-1, 1)  # 0, 1, 2, 3, 4, 5
+        # division_term = torch.exp(
+        #     torch.arange(0, dim_model, 2) * (-torch.log(torch.tensor([10000.0]))) / dim_model)  # 1000^(2i/dim_model)
 
-        # PE(pos, 2i) = sin(pos/1000^(2i/dim_model))
-        pos_encoding[:, 0::2] = torch.sin(positions_list * division_term)
+        # # PE(pos, 2i) = sin(pos/1000^(2i/dim_model))
+        # pos_encoding[:, :, 0::2] = torch.sin(positions_list * division_term)
 
-        # PE(pos, 2i + 1) = cos(pos/1000^(2i/dim_model))
-        pos_encoding[:, 1::2] = torch.cos(positions_list * division_term)
+        # # PE(pos, 2i + 1) = cos(pos/1000^(2i/dim_model))
+        # pos_encoding[:, :, 1::2] = torch.cos(positions_list * division_term)
 
-        # Saving buffer (same as parameter without gradients needed)
-        pos_encoding = pos_encoding.unsqueeze(0).transpose(0, 1)
-        self.register_buffer("pos_encoding", pos_encoding)
+        # # Saving buffer (same as parameter without gradients needed)
+        # pos_encoding = pos_encoding.transpose(0, 1)
+        # self.register_buffer("pos_encoding", pos_encoding)
 
-    def forward(self, token_embedding: torch.tensor) -> torch.tensor:
+        position = torch.arange(max_len).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2) * (-math.log(10000.0) / d_model))
+        pe = torch.zeros(max_len, 1, d_model)
+        pe[:, 0, 0::2] = torch.sin(position * div_term)
+        pe[:, 0, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
         # Residual connection + pos encoding
-        return self.dropout(token_embedding + self.pos_encoding[:token_embedding.size(0), :])
+        # return self.dropout(token_embedding + self.pos_encoding[:token_embedding.size(0), :])
+        x = x + self.pe[:x.size(0)]
+        return self.dropout(x)
 
 
 class SEMGTransformer(pl.LightningModule):
-    def __init__(self):
+    def __init__(self, batch_first=False):
         super(SEMGTransformer, self).__init__()
+        self.batch_first = batch_first
         
         self.n_layers = 2
         
@@ -60,13 +70,15 @@ class SEMGTransformer(pl.LightningModule):
         self.output_dim = 16
 
         self.positional_encoder = PositionalEncoding(
-            dim_model=self.d_model, dropout_p=dropout, max_len=BATCH_SIZE
+            d_model=self.d_model, dropout_p=dropout, max_len=5000
         )
         self.embedding = nn.Linear(self.input_dim, self.d_model)
-        self.transformer = nn.Transformer(d_model=self.d_model, nhead=4, num_encoder_layers=self.n_layers,
+        self.transformer = nn.Transformer(d_model=self.d_model, nhead=1, num_encoder_layers=self.n_layers,
                                           num_decoder_layers=self.n_layers, dim_feedforward=self.output_dim, dropout=dropout,
-                                          activation='relu')
+                                          activation='relu', batch_first=self.batch_first)
         self.fc = nn.Linear(self.d_model, self.output_dim)
+
+        self.tgt_mask = None
 
         # Kin-mus-uji dataset stuff
         # Indices of the 14 joints we want to predict as per kin-mus-uji datasetpaper
@@ -78,7 +90,11 @@ class SEMGTransformer(pl.LightningModule):
         self.scheduler = None
         self.cycle_count = 0.0
 
-    def forward(self, src, tgt, tgt_mask=None, src_pad_mask=None, tgt_pad_mask=None):
+        # Lightning stuff
+        self.training_step_outputs = []
+
+    # Rename this to "forward" for training
+    def forward(self, src, tgt, tgt_mask): #, src_pad_mask=None, tgt_pad_mask=None):
         # Src size must be (batch_size, src sequence length)
         # Tgt size must be (batch_size, tgt sequence length)
 
@@ -89,43 +105,45 @@ class SEMGTransformer(pl.LightningModule):
         tgt = self.positional_encoder(tgt)
 
         # we permute to obtain size (sequence length, batch_size, dim_model),
-        src = src.permute(1, 0, 2)
-        tgt = tgt.permute(1, 0, 2)
+        if not self.batch_first:
+            src = src.permute(1, 0, 2)
+            tgt = tgt.permute(1, 0, 2)
 
         # Transformer blocks - Out size = (sequence length, batch_size, num_tokens)
-        transformer_out = self.transformer(src, tgt, tgt_mask=tgt_mask, src_key_padding_mask=src_pad_mask, tgt_key_padding_mask=tgt_pad_mask)
+        transformer_out = self.transformer(src, tgt, tgt_mask=tgt_mask, src_key_padding_mask=None, tgt_key_padding_mask=None)
         out = self.fc(transformer_out)
-        out = out.permute(1, 0, 2)
+        if not self.batch_first:
+            out = out.permute(1, 0, 2)
+        # out = out.permute(1, 0, 2)
 
         return out
     
-    # def forward(self, x):
-    #     y_input = torch.tensor([[0.0]], dtype=torch.long, device=device)
+    # Use this for tracing and exporting the model
+    # def forward(self, x, y_input, tgt_mask):
+    #     y_input = torch.zeros(1, 1, 16, dtype=torch.float32)#.to(device)
 
-    #     num_tokens = len(x[0])
-
-    #     for _ in range(100):
+    #     for _ in torch.arange(40):
+    #         # print(i)
     #         # Get source mask
-    #         tgt_mask = model.get_tgt_mask(y_input.size(1)).to(device)
+    #         # tgt_mask = self.get_tgt_mask(y_input.size(1))#.to(device)
+    #         tgt_mask = self.tgt_mask[:y_input.size(1), :y_input.size(1)]
             
-    #         pred = model(input_sequence, y_input, tgt_mask)
-            
-    #         next_item = pred.topk(1)[1].view(-1)[-1].item() # num with highest probability
-    #         next_item = torch.tensor([[next_item]], device=device)
+    #         pred = self.forward_pass(x, y_input, tgt_mask=tgt_mask)[:, -1:, :]
 
+    #         # if i == 0:
+    #             # y_input = pred
+    #         # else:
     #         # Concatenate previous input with predicted best word
-    #         y_input = torch.cat((y_input, next_item), dim=1)
+    #         y_input = torch.cat((y_input, pred), dim=1)
 
-    #         # Stop if model predicts end of sentence
-    #         if next_item.view(-1).item() == EOS_token:
-    #             break
-
-    #     return y_input.view(-1).tolist()
-
-    def get_tgt_mask(self, size) -> torch.tensor:
-        # Generates a squeare matrix where the each row allows one word more to be seen
-        mask = torch.tril(torch.ones(size, size) == 1).to(device)  # Lower triangular matrix
-        mask = mask.float()
+    #     return y_input
+    
+    def get_tgt_mask(self, size: int):
+        if self.tgt_mask is not None:
+            return self.tgt_mask[:size, :size]
+        
+        # Generates a square matrix where each row allows one word more to be seen
+        mask = torch.triu(torch.ones([size, size], dtype=torch.float32)).T.to(device)  # Lower triangular matrix
         mask = mask.masked_fill(mask == 0, float('-inf'))  # Convert zeros to -inf
         mask = mask.masked_fill(mask == 1, float(0.0))  # Convert ones to 0
 
@@ -136,12 +154,13 @@ class SEMGTransformer(pl.LightningModule):
         #  [0.,   0.,   0.,   0., -inf],
         #  [0.,   0.,   0.,   0.,   0.]]
 
+        self.tgt_mask = mask
         return mask
 
-    def create_pad_mask(self, matrix: torch.tensor, pad_token: int) -> torch.tensor:
-        # If matrix = [1,2,3,0,0,0] where pad_token=0, the result mask is
-        # [False, False, False, True, True, True]
-        return (matrix == pad_token)
+    # def create_pad_mask(self, matrix: Tensor, pad_token: int):
+    #     # If matrix = [1,2,3,0,0,0] where pad_token=0, the result mask is
+    #     # [False, False, False, True, True, True]
+    #     return (matrix == pad_token)
 
     def loss_function(self, x, y):
         # Kin-mus-uji loss
@@ -150,7 +169,7 @@ class SEMGTransformer(pl.LightningModule):
 
         # Hu 2022 loss
         # Take MSE loss on the whole output, not the dummy token at the end
-        loss = nn.MSELoss()(x[:self.output_dim - 1], y[:self.output_dim - 1]) / 15
+        loss = nn.MSELoss()(x[:, :, :self.output_dim - 1], y[:, :, :self.output_dim - 1]) / 15
 
         return loss
 
@@ -160,46 +179,56 @@ class SEMGTransformer(pl.LightningModule):
         x = batch['sample']
         y = batch['label']
 
+        # y_input = y
+        # y_expected = y
+
         # Now we shift the tgt by one so with the <SOS> we predict the token at pos 1
-        # y_input = y[:, :-1]
-        # y_expected = y[:, 1:]
+        y_input = y[:, :-1, :]
+        y_expected = y[:, 1:, :]
 
         # Get mask to mask out the next words
-        sequence_length = y.size(1)
+        sequence_length = y_input.size(1)
         tgt_mask = self.get_tgt_mask(sequence_length)
 
-        z = self.forward(x, y, tgt_mask=tgt_mask)
-        loss = self.loss_function(z, y)
-        self.log("train_loss", loss, on_step=True)
-        return loss
+        z = self.forward(x, y_input, tgt_mask=tgt_mask)
+        loss = self.loss_function(z, y_expected)
+        
+        # self.log("train_loss", loss, on_step=True)
+        self.training_step_outputs.append(loss)
 
+        return loss
 
     def validation_step(self, batch, batch_idx):
         x = batch['sample']
         y = batch['label']
 
-        # Now we shift the tgt by one so with the <SOS> we predict the token at pos 1
-        # y_input = y[:, :-1]
-        # y_expected = y[:, 1:]
+        # y_input = y
+        # y_expected = y
+
+         # Now we shift the tgt by one so with the <SOS> we predict the token at pos 1
+        y_input = y[:, :-1, :]
+        y_expected = y[:, 1:, :]
 
         # Get mask to mask out the next words
-        sequence_length = y.size(1)
+        sequence_length = y_input.size(1)
         tgt_mask = self.get_tgt_mask(sequence_length)
 
-        z = self.forward(x, y, tgt_mask=tgt_mask)
-        loss = self.loss_function(z, y)
+        z = self.forward(x, y_input, tgt_mask=tgt_mask)
+        loss = self.loss_function(z, y_expected)
 
         # For the first element, get the first 3 relevant predicted joint angles on the cpu and compare
         for i in range(3):
             # Kin-mus-uji val logging
             # z_comp = z[0, 0, self.loss_indices[i]].cpu().detach().numpy()
             # y_comp = y[0, 0, self.loss_indices[i]].cpu().detach().numpy()
+            
             # Hu 2022 val logging
             z_comp = z[0, 0, i].cpu().detach().numpy()
-            y_comp = y[0, 0, i].cpu().detach().numpy()
+            y_comp = y_expected[0, 0, i].cpu().detach().numpy()
+
             print(i, z_comp, y_comp)
 
-        self.log("val_loss", loss, on_step=True)
+        self.log("val_loss", loss)
         return loss
 
     def configure_optimizers(self):
@@ -207,31 +236,35 @@ class SEMGTransformer(pl.LightningModule):
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, 1.0, gamma=0.5)
         return self.optimizer
 
-    def training_epoch_end(self, outputs):
+    def on_train_epoch_end(self):
+        epoch_average = torch.stack(self.training_step_outputs).mean()
+        self.log("training_epoch_average", epoch_average)
+        self.training_step_outputs.clear()  # free memory
+
         # If last epoch loss is below threshold, fix learning rate
-        if self.trainer.logged_metrics['train_loss'] < 5 or self.trainer.current_epoch > 20:
-            return
+        # if self.trainer.logged_metrics['train_loss'] < 3 or self.trainer.current_epoch > 30:
+        # if self.trainer.current_epoch > 30:
+            # return
         
-        self.scheduler.step()
+        # Try this
+        # if self.trainer.current_epoch < 30:
+            # self.scheduler.step()
 
         # Reset learning rate if loss below threshold
         if self.trainer.current_epoch > 0 and self.trainer.current_epoch % 5 == 0:
             for param_group in self.optimizer.param_groups:
                 param_group['lr'] = base_lr * 0.95 ** self.cycle_count
-                print("Loss below threshold, new learning rate: ", param_group['lr'])
+                print("Learning rate below threshold, new learning rate: ", param_group['lr'])
             self.cycle_count += 1.5
 
 
 if __name__ == "__main__":
     model = SEMGTransformer().to(device)
+    # model = torch.compile(model)
 
-    # KIN-MUS-UJI config
-    # input_tensor = torch.rand(1024, 100, 18)
-    # target = torch.rand(1024, 100, 18)
-    
     # Hu 2022 config
-    input_tensor = torch.rand(1024, 100, 16).to(device)
-    target = torch.rand(1024, 100, 16).to(device)
+    input_tensor = torch.rand(2, SEQ_LEN, 16).to(device)
+    target = torch.rand(2, SEQ_LEN, 16).to(device)
 
     sequence_length = target.size(1)
     tgt_mask = model.get_tgt_mask(sequence_length)
