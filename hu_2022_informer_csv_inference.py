@@ -15,9 +15,9 @@ if __name__ == "__main__":
 
     # Load data from csv
     # Our recorded data
-    # df = pd.read_csv("data/RawEMG-2023-03-22-13.15.34.csv", skiprows=0, usecols=range(8), dtype=float)
+    df = pd.read_csv("data/RawEMG-2023-03-22-13.15.34.csv", skiprows=0, usecols=range(8), dtype=float)
     # Data from Hu et al. 2022 validation set - updates every time we train the model
-    df = pd.read_csv("hu_2022_valdata_sEMG.csv", usecols=range(8), dtype=float)
+    # df = pd.read_csv("hu_2022_valdata_sEMG.csv", usecols=range(8), dtype=float)
 
     # Take all rows and first 8 columns and convert to tensor
     input_tensor = torch.tensor(df.iloc[:, :8].values, dtype=torch.float32)[:4000, :]

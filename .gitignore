@@ -1,6 +1,8 @@
 data/
 model_hu_2022_tf/
 model.tf/
+model_hu_2022_informer_tf/
+
 
 lightning_logs/
 wandb/

@@ -12,7 +12,7 @@ model_name = "model_hu_2022_informer"
 base_lr = 3e-3
 
 class SEMGInformer(pl.LightningModule):
-    def __init__(self, inference=False):
+    def __init__(self, inference=False, batch_size=BATCH_SIZE):
         super(SEMGInformer, self).__init__()
 
         self.prediction_length = INFORMER_PREDICTION_LENGTH
@@ -51,19 +51,20 @@ class SEMGInformer(pl.LightningModule):
         seq_len = SEQ_LEN - 1
         input_dim = configuration.input_size
         self.time_features = torch.linspace(0, 1, seq_len).reshape(1, seq_len, 1)
-        self.time_features = self.time_features.repeat(BATCH_SIZE, 1, input_dim).to(device)
-        # self.time_features = torch.ones(BATCH_SIZE, seq_len, input_dim).to(device)
-        self.past_observed_mask = torch.ones(BATCH_SIZE, seq_len, input_dim, dtype=torch.bool).to(device)
+        self.time_features = self.time_features.repeat(batch_size, 1, input_dim).to(device)
+        # self.time_features = torch.ones(batch_size, seq_len, input_dim).to(device)
+        self.past_observed_mask = torch.ones(batch_size, seq_len, input_dim, dtype=torch.bool).to(device)
 
         # Lightning stuff
         self.training_step_outputs = []
 
-    def forward(self, past_values, past_time_features, past_observed_mask, future_values=None, future_time_features=None):
+    # def forward(self, past_values, past_time_features, past_observed_mask, future_values=None, future_time_features=None):
+    def forward(self, past_values, past_time_features, future_values, future_time_features):
         # z = self.conv1d(past_values.permute(0, 2, 1))
         # past_values = z.permute(0, 2, 1)
         model_output = self.model(past_values=past_values, 
                           past_time_features=past_time_features, 
-                          past_observed_mask=past_observed_mask, 
+                          past_observed_mask=self.past_observed_mask, 
                           future_values=future_values,
                           future_time_features=future_time_features,
                           output_hidden_states=True
