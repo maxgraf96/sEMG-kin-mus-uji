@@ -21,7 +21,7 @@ if __name__ == "__main__":
     wandb_logger = WandbLogger()
 
     trainer = pl.Trainer(
-        max_epochs=50,
+        max_epochs=600,
         check_val_every_n_epoch=5,
         accelerator="gpu",
         devices=1,

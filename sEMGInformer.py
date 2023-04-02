@@ -1,31 +1,36 @@
+import numpy as np
 import torch
 import pytorch_lightning as pl
 from transformers import InformerConfig, InformerModel
+from transformers.activations import NewGELUActivation
 from torch import optim, nn
 from torch.optim import AdamW
 
-from hyperparameters import BATCH_SIZE, INFORMER_PREDICTION_LENGTH, SEQ_LEN
+from hyperparameters import BATCH_SIZE, INFORMER_PREDICTION_LENGTH, LOSS_INDICES, SEQ_LEN
+from hu_2022_DataModule import load_means_stds
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 model_name = "model_hu_2022_informer"
-base_lr = 3e-3
+base_lr = 2e-5
 
 class SEMGInformer(pl.LightningModule):
-    def __init__(self, inference=False, batch_size=BATCH_SIZE):
+    def __init__(self, batch_size=BATCH_SIZE):
         super(SEMGInformer, self).__init__()
 
+        seq_len = SEQ_LEN - 1
         self.prediction_length = INFORMER_PREDICTION_LENGTH
+        # self.lags_sequence = [1, 100]
         self.lags_sequence = [1]
-        self.loss_indices = [0, 1, 3, 4, 7, 8, 11, 12]
+        self.num_features = len(LOSS_INDICES)
 
         configuration = InformerConfig(
             prediction_length=self.prediction_length,
             lags_sequence=self.lags_sequence,
-            context_length=SEQ_LEN - 1 - max(self.lags_sequence),
-            num_time_features=16,
-            input_size=16,
-            d_model=32,
+            context_length=seq_len - max(self.lags_sequence),
+            num_time_features=self.num_features,
+            input_size=self.num_features,
+            d_model=16,
             encoder_layers=1,
             decoder_layers=1,
             encoder_attention_heads=1,
@@ -33,35 +38,42 @@ class SEMGInformer(pl.LightningModule):
             scaling=None,
             output_hidden_states=True,
             return_dict_in_generate=True,
-            attention_type="full",
-            attention_dropout=0.05,
+            # attention_type="full",
+            attention_dropout=0.1,
+            activation_function="gelu_new",
         )
 
-        # self.conv1d = nn.Conv1d(16, 16, 2, 1, padding="same")
+        self.loss_fn = nn.L1Loss()
         self.model = InformerModel(configuration)
-        # if not inference else InformerModel.from_pretrained(model_name + ".ckpt", config=configuration)
-        
-        self.fc = nn.Linear(configuration.d_model, 16)
-        self.act = nn.GELU()
+        self.act = NewGELUActivation()
+        self.fc = nn.Sequential(
+            nn.Linear(configuration.d_model, configuration.d_model * 2),
+            self.act,
+            nn.Linear(configuration.d_model * 2, configuration.d_model * 2),
+            self.act,
+            nn.Linear(configuration.d_model * 2, self.num_features)
+        )
 
         self.optimizer = None
         self.scheduler = None
         self.cycle_count = 0.0
+        self.should_val_print = True
 
-        seq_len = SEQ_LEN - 1
         input_dim = configuration.input_size
-        self.time_features = torch.linspace(0, 1, seq_len).reshape(1, seq_len, 1)
-        self.time_features = self.time_features.repeat(batch_size, 1, input_dim).to(device)
-        # self.time_features = torch.ones(batch_size, seq_len, input_dim).to(device)
+        self.past_time_features = torch.linspace(0, 1, seq_len).reshape(1, seq_len, 1)
+        self.past_time_features = self.past_time_features.repeat(batch_size, 1, input_dim).to(device)
+        # self.past_time_features = torch.ones(batch_size, self.seq_len, input_dim).to(device)
+        
+        self.future_time_features = torch.linspace(0, 1, self.prediction_length).reshape(1, self.prediction_length, 1)
+        self.future_time_features = self.future_time_features.repeat(batch_size, 1, input_dim).to(device)
+        # self.future_time_features = torch.ones(batch_size, self.prediction_length, input_dim).to(device)
         self.past_observed_mask = torch.ones(batch_size, seq_len, input_dim, dtype=torch.bool).to(device)
 
         # Lightning stuff
         self.training_step_outputs = []
+        self.means_s, self.stds_s, self.means_l, self.stds_l = load_means_stds()
 
-    # def forward(self, past_values, past_time_features, past_observed_mask, future_values=None, future_time_features=None):
-    def forward(self, past_values, past_time_features, future_values, future_time_features):
-        # z = self.conv1d(past_values.permute(0, 2, 1))
-        # past_values = z.permute(0, 2, 1)
+    def forward(self, past_values, past_time_features, future_values=None, future_time_features=None):
         model_output = self.model(past_values=past_values, 
                           past_time_features=past_time_features, 
                           past_observed_mask=self.past_observed_mask, 
@@ -73,13 +85,13 @@ class SEMGInformer(pl.LightningModule):
         output = self.fc(lhs)
         return output
     
-    def generate(self, past_values, past_time_features, future_time_features, past_observed_mask):
+    def generate(self, past_values, past_time_features, future_time_features):
         future_values = torch.ones(past_values.shape[0], self.prediction_length, past_values.shape[2]).to(device)
         model_output = self.model(
             past_values=past_values,
             past_time_features=past_time_features,
             future_time_features=future_time_features,
-            past_observed_mask=past_observed_mask,
+            past_observed_mask=self.past_observed_mask,
             future_values=future_values,
             output_hidden_states=True,
             )
@@ -88,93 +100,85 @@ class SEMGInformer(pl.LightningModule):
         return output
 
     def loss_function(self, x, y):
-        # Hu 2022 loss
-        # Take MSE loss on the whole output, not the dummy token at the end
-        # loss = nn.MSELoss()(x[:, :, :15], y[:, :, :15]) / 15
-        loss = nn.MSELoss()(x[:, :, self.loss_indices], y[:, :, self.loss_indices]) / len(self.loss_indices)
-
+        loss = self.loss_fn(x, y)
         return loss
 
     def training_step(self, batch, batch_idx):
         x = batch['sample']
-        y = batch['label']
-
-        seq_len = SEQ_LEN - 1
-        bs = x.shape[0]
-        input_dim = x.shape[2]
-        output_dim = y.shape[2]
-
-        # future_values = torch.zeros(bs, self.prediction_length, output_dim).to(device)
-        future_values = y
-
-        future_time_features = torch.linspace(0, 1, self.prediction_length).reshape(1, self.prediction_length, 1)
-        future_time_features = future_time_features.repeat(bs, 1, output_dim).to(device)
-
-        output = self.forward(past_values=x, past_time_features=self.time_features, past_observed_mask=self.past_observed_mask, future_values=future_values, future_time_features=future_time_features)
+        y = batch['label'][:, -INFORMER_PREDICTION_LENGTH:, :]
+        output = self.forward(
+            past_values=x, 
+            past_time_features=self.past_time_features, 
+            future_values=y, 
+            future_time_features=self.future_time_features
+            )
 
         loss = self.loss_function(output, y)
-
-        # self.log("train_loss", loss, on_step=True)
         self.training_step_outputs.append(loss)
-
         return loss
 
     def validation_step(self, batch, batch_idx):
         x = batch['sample']
-        y = batch['label']
+        y = batch['label'][:, -INFORMER_PREDICTION_LENGTH:, :]
+        future_values = torch.zeros(x.shape[0], self.prediction_length, x.shape[2]).to(device)
+        output = self.forward(
+            past_values=x, 
+            past_time_features=self.past_time_features,
+            future_values=future_values,
+            future_time_features=self.future_time_features
+            )
 
-        seq_len = SEQ_LEN - 1
-        bs = x.shape[0]
-        input_dim = x.shape[2]
-        output_dim = y.shape[2]
+        diffs = []
+        z_comp = output.cpu().detach().numpy()
+        y_comp = y.cpu().detach().numpy()
 
-        future_values = y
+        # Denormalize
+        z_comp = z_comp * self.stds_l + self.means_l
+        y_comp = y_comp * self.stds_l + self.means_l
 
-        future_time_features = torch.linspace(0, 1, self.prediction_length).reshape(1, self.prediction_length, 1)
-        future_time_features = future_time_features.repeat(bs, 1, output_dim).to(device)
+        diffs = np.abs(z_comp - y_comp)
 
-        output = self.forward(past_values=x, past_time_features=self.time_features, past_observed_mask=self.past_observed_mask, future_values=future_values, future_time_features=future_time_features)
+        if self.should_val_print:
+            print("Validation")
+            print("z_comp:", z_comp[0, 50])
+            print("y_comp:", y_comp[0, 50])
+            self.should_val_print = False
+            
+        # np.set_printoptions(precision=3)
+        # print("Average diff:", np.mean(diffs))
+        # print("-----------------------------------------")
 
         loss = self.loss_function(output, y)
-
-        # For the first element, get the first 3 relevant predicted joint angles on the cpu and compare
-        # for i in range(3):
-        #     # Hu 2022 val logging
-        #     z_comp = output[0, 0, i].cpu().detach().numpy()
-        #     y_comp = y[0, 0, i].cpu().detach().numpy()
-
-        #     print(i, z_comp, y_comp)
-
         self.log("val_loss", loss)
+        self.log("avg_val_diff", np.mean(diffs))
+        self.log("avg_val_diff_std", np.std(diffs))
         return loss
 
     def configure_optimizers(self):
-        # self.optimizer = optim.Adam(self.parameters(), betas=(0.9, 0.95), eps=1.0e-9, lr=base_lr)
-        self.optimizer = AdamW(self.parameters(), lr=base_lr, betas=(0.9, 0.95), weight_decay=0.1)
-        # Every 30 epochs reduce learning rate by a factor of 10
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, 5, gamma=0.8)
-        return {
-            'optimizer': self.optimizer,
-            'lr_scheduler': self.scheduler,
-        }
+        self.optimizer = AdamW(self.parameters(), lr=base_lr, betas=(0.9, 0.999), eps=1e-08, weight_decay=0.01)
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, 20, gamma=0.9)
+        return self.optimizer
 
     def on_train_epoch_end(self):
         epoch_average = torch.stack(self.training_step_outputs).mean()
         self.log("training_epoch_average", epoch_average)
         self.training_step_outputs.clear()  # free memory
+        # Trigger printing of validation set values only for the first val batch
+        self.should_val_print = True
 
-        # If last epoch loss is below threshold, fix learning rate
-        # if self.trainer.logged_metrics['train_loss'] < 3 or self.trainer.current_epoch > 30:
-        # if self.trainer.current_epoch > 30:
-            # return
-        
-        # # Reset learning rate if loss below threshold
-        # if self.trainer.current_epoch > 0 and self.trainer.current_epoch % 5 == 0:
-        #     for param_group in self.optimizer.param_groups:
-        #         param_group['lr'] = base_lr * 0.95 ** self.cycle_count
-        #         print("Learning rate below threshold, new learning rate: ", param_group['lr'])
-        #     self.cycle_count += 1.5
+        if self.trainer.current_epoch < 80:
+            self.scheduler.step()
 
+        # Reset learning rate if loss below threshold
+        if self.trainer.current_epoch > 0 and self.trainer.current_epoch < 100 and self.trainer.current_epoch % 10 == 0:
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = base_lr * 0.96 ** self.cycle_count
+                print("Learning rate below threshold, new learning rate: ", param_group['lr'])
+            self.cycle_count += 1
+
+        # Save model every 100 epochs
+        if self.trainer.current_epoch > 0 and self.trainer.current_epoch % 100 == 0:
+            torch.save(self.state_dict(), model_name + ".pt")
 
 
 if __name__ == "__main__":
@@ -193,7 +197,6 @@ if __name__ == "__main__":
     # over seq_len steps
     time_features = torch.linspace(0, 1, seq_len).reshape(1, seq_len, 1).to(device)
     time_features = time_features.repeat(bs, 1, input_dim)
-    past_observed_mask = torch.ones(bs, seq_len, input_dim, dtype=torch.bool).to(device)
 
     future_values = torch.rand(bs, model.prediction_length, output_dim).to(device)
     future_time_features = torch.ones(bs, model.prediction_length, output_dim).to(device)
@@ -202,7 +205,6 @@ if __name__ == "__main__":
     output, hs_output = model(
         past_values=input_tensor, 
         past_time_features=time_features, 
-        past_observed_mask=past_observed_mask,
         future_values=future_values,
         future_time_features=future_time_features
     )

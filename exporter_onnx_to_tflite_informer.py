@@ -17,7 +17,7 @@ if __name__ == "__main__":
         output_folder_path=model_tf_folder,
         output_signaturedefs=True,
         copy_onnx_input_output_names_to_tflite=True,
-        keep_shape_absolutely_input_names=["past_values", "past_time_features", "past_observed_mask", "future_values", "future_time_features"],
+        keep_shape_absolutely_input_names=["past_values", "past_time_features", "future_values", "future_time_features"],
         non_verbose=False,
     )
 
@@ -27,7 +27,7 @@ if __name__ == "__main__":
     converter.target_spec.supported_types = [tf.float16] # optional
     converter.target_spec.supported_ops = [
         tf.lite.OpsSet.TFLITE_BUILTINS, # enable TensorFlow Lite ops.
-        tf.lite.OpsSet.SELECT_TF_OPS # enable TensorFlow ops.
+        # tf.lite.OpsSet.SELECT_TF_OPS # enable TensorFlow ops.
         ]
     with open(tflite_file_path, "wb") as f:
         f.write(converter.convert())
@@ -35,6 +35,8 @@ if __name__ == "__main__":
     tf.lite.experimental.Analyzer.analyze(model_path=tflite_file_path,
                                         model_content=None,
                                         gpu_compatibility=False)
+    
+    # exit()
 
     # Load a TF model and allocate tensors.
     interpreter = tf.lite.Interpreter(model_path=tflite_file_path)
@@ -56,30 +58,31 @@ if __name__ == "__main__":
         print(entry['name'], entry['index'], entry['shape'], entry['dtype'])
 
     # return shape is currently seq_len 10 because we limited the input_seq_len to 10
-    input_data = tf.random.uniform((1, SEQ_LEN, 16), dtype=tf.float32)
-    tgt_data = tf.random.uniform((1, SEQ_LEN, 16), dtype=tf.float32)
-    tgt_mask_data = tf.random.uniform((SEQ_LEN, SEQ_LEN), dtype=tf.float32)
+    seq_len = SEQ_LEN - 1
+    feature_dim = 16
+    past_values = tf.random.uniform((1, seq_len, feature_dim), dtype=tf.float32)
+    past_time_features = tf.random.uniform((1, seq_len, feature_dim), dtype=tf.float32)
+    future_values = tf.random.uniform((1, seq_len, feature_dim), dtype=tf.float32)
+    future_time_features = tf.random.uniform((1, seq_len, feature_dim), dtype=tf.float32)
 
-
-    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     # !!! In tflite we have to resize the input tensors to the correct shape for all axes that have dynamic size !!!!!
-    # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
     # interpreter.resize_tensor_input(tgt_mask_details['index'], tgt_mask_data.shape)
     # interpreter.resize_tensor_input(tgt_details['index'], tgt_data.shape)
-    # interpreter.allocate_tensors()
+    interpreter.allocate_tensors()
     
-    # # Set data
-    # interpreter.set_tensor(tgt_mask_details['index'], tgt_mask_data)
-    # interpreter.set_tensor(input_details['index'], input_data)
-    # interpreter.set_tensor(tgt_details['index'], tgt_data)
+    # Set data
+    interpreter.set_tensor(input_details[0]['index'], past_values)
+    interpreter.set_tensor(input_details[1]['index'], future_values)
+    interpreter.set_tensor(input_details[2]['index'], past_time_features)
+    interpreter.set_tensor(input_details[3]['index'], future_time_features)
 
-    # # Take time
-    # import time
-    # start = time.time()
-    # for i in range(SEQ_LEN):
-    #     interpreter.invoke()
-    #     output_shape = interpreter.get_tensor(output_details['index']).shape
-    # end = time.time()
-    # print("Time:", end - start)
+    # Take time
+    import time
+    start = time.time()
+    for i in range(SEQ_LEN):
+        interpreter.invoke()
+        output_shape = interpreter.get_tensor(output_details[0]['index']).shape
+    end = time.time()
+    print("Time:", end - start)
 
-    # print("[TFLite] Model output shape:", output_shape)
+    print("[TFLite] Model output shape:", output_shape)

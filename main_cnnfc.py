@@ -13,7 +13,7 @@ if __name__ == "__main__":
     data_module = Hu2022DataModule(
         data_dir="/import/c4dm-datasets-ext/hu-22-sEMG-myo/processed", 
         batch_size=BATCH_SIZE, 
-        model_type="fc"
+        model_type="cnn"
         )
 
     model = SEMGCNNFC()
@@ -30,7 +30,7 @@ if __name__ == "__main__":
         devices=1,
         # strategy="dp",
         logger=wandb_logger,
-        num_sanity_val_steps=0  # Disable validation at the start of training
+        # num_sanity_val_steps=0  # Disable validation at the start of training
         )
     trainer.fit(model, data_module)
 

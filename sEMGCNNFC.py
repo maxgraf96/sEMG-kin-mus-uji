@@ -1,56 +1,37 @@
 import torch
 from torch import optim, nn, utils, Tensor
+from torch.optim import AdamW
 import pytorch_lightning as pl
+from transformers.activations import NewGELUActivation
 
 from ResBlock import ResBlock
-from hyperparameters import BATCH_SIZE
+from hyperparameters import BATCH_SIZE, SEQ_LEN, LOSS_INDICES
 
 model_name = "model_hu_2022_cnnfc"
 dropout = 0.05
 
-base_lr = 1e-2
+base_lr = 5e-3
 
-conv_channels = [128, 256, 1024]
+conv_channels = [32, 64, 1024]
+seq_len = SEQ_LEN - 1
 
 class SEMGCNNFC(pl.LightningModule):
     def __init__(self):
         super().__init__()
 
-        self.act = nn.Tanh()
-        self.conv1 = nn.Conv2d(1, conv_channels[0], (20, 8), stride=(2))
+        self.act = NewGELUActivation()
+        self.conv1 = nn.Conv2d(1, conv_channels[0], (2, 8), stride=(2))
         self.bn1 = nn.BatchNorm2d(conv_channels[0])
         self.dropout = nn.Dropout(dropout)
         self.pool = nn.MaxPool2d((2, 1))
         
         self.conv2 = nn.Conv2d(conv_channels[0], conv_channels[1], (2, 1), 2)
         self.bn2 = nn.BatchNorm2d(conv_channels[1])
-        self.conv3 = nn.Conv2d(conv_channels[1], conv_channels[2], (2, 1), 2)
-        self.bn3 = nn.BatchNorm2d(conv_channels[2])
-
-        self.last_entry_linear = nn.Sequential(
-            nn.Linear(8, 32),
-            self.act,
-            nn.Linear(32, 15)
-        )
-
-
-            # nn.Conv2d(128, 256, (3, 1), 1),
-            # nn.BatchNorm2d(256),
-            # nn.Tanh(),
-            # nn.Dropout(dropout),
-            # nn.MaxPool2d((2, 1))
-        # )
 
         self.fc = nn.Sequential(
-            nn.Linear(conv_channels[2] * 2, 128),
-            nn.Tanh(),
-            nn.Linear(128, 15)
-        )
-
-        self.final_fc = nn.Sequential(
-            nn.Linear(30, 64),
-            nn.Tanh(),
-            nn.Linear(64, 15)
+            nn.Linear(conv_channels[1], 128),
+            self.act,
+            nn.Linear(128, len(LOSS_INDICES))
         )
 
         self.optimizer = None
@@ -62,7 +43,6 @@ class SEMGCNNFC(pl.LightningModule):
 
 
     def forward(self, x):
-        last = torch.squeeze(self.last_entry_linear(x[:, :, -1, :]))
         z = self.conv1(x)
         z = self.bn1(z)
         z = self.act(z)
@@ -73,22 +53,14 @@ class SEMGCNNFC(pl.LightningModule):
         z = self.bn2(z)
         z = self.act(z)
         z = self.dropout(z)
-        z = self.pool(z)
-
-        z = self.conv3(z)
-        z = self.bn3(z)
-        z = self.act(z)
-        z = self.dropout(z)
 
         z = z.view(z.size(0), -1)
         z = self.fc(z)
-        z = torch.cat((z, last), 1)
-        z = self.final_fc(z)
         return z
 
 
     def loss_function(self, x, y):
-        loss = nn.MSELoss()(x, y) / 15
+        loss = nn.MSELoss()(x, y)
         return loss
 
     def training_step(self, batch, batch_idx):
@@ -118,31 +90,23 @@ class SEMGCNNFC(pl.LightningModule):
         return loss
 
     def configure_optimizers(self):
-        self.optimizer = optim.Adam(self.parameters(), lr=base_lr)
-        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, 1.0, gamma=0.9)
-        return self.optimizer
+        self.optimizer = AdamW(self.parameters(), lr=base_lr, betas=(0.9, 0.95), weight_decay=0.1)
+        # Every n epochs reduce learning rate by a factor of 10
+        self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, 5, gamma=0.5)
+        return {
+            'optimizer': self.optimizer,
+            'lr_scheduler': self.scheduler,
+        }
 
     def on_train_epoch_end(self):
         epoch_average = torch.stack(self.training_step_outputs).mean()
         self.log("training_epoch_average", epoch_average)
         self.training_step_outputs.clear()  # free memory
 
-        if self.trainer.current_epoch < 30:
-            self.scheduler.step()
-
-            # Reset learning rate if loss below threshold
-            # if self.trainer.current_epoch > 0 and self.trainer.current_epoch % 5 == 0:
-            #     for param_group in self.optimizer.param_groups:
-            #         prev_lr = param_group['lr']
-            #         param_group['lr'] = prev_lr * 0.90 ** self.cycle_count
-            #         print("Learning rate was: ", prev_lr)
-            #         print("New learning rate: ", param_group['lr'])
-            #     self.cycle_count += 1
-
 
 if __name__ == "__main__":
     model = SEMGCNNFC()
-    input_tensor = torch.rand(100, 1, 100, 8)
+    input_tensor = torch.rand(100, 1, 10, 8)
     y = model(input_tensor)
 
     # Print number of trainable parameters

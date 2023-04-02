@@ -67,4 +67,4 @@ if __name__ == '__main__':
     print(onnx_model.graph.input)
     print("Outputs:")
     print(onnx_model.graph.output)
-    # print(onnx.helper.printable_graph(onnx_model.graph))
+    print(onnx.helper.printable_graph(onnx_model.graph))
